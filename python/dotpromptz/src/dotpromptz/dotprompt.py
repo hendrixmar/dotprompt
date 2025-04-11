@@ -34,10 +34,8 @@ from dotpromptz.typing import (
     ToolDefinition,
     ToolResolver,
     PromptMetadata,
-    DataArgument,
-    RenderedPrompt,
 )
-from dotpromptz.picoschema import picoschema, PicoschemaOptions
+from dotpromptz.picoschema import picoschema
 from handlebarrz import EscapeFunction, Handlebars, HelperFn
 
 # Pre-compiled regex for finding partial references in handlebars templates
@@ -258,18 +256,14 @@ class Dotprompt:
         if meta.input.schema_:
             schema = picoschema(
                 schema=meta.input.schema_,
-                options=PicoschemaOptions(
-                    schema_resolver=self._wrapped_schema_resolver()
-                )
+                schema_resolver=self._wrapped_schema_resolver()
             )
             new_meta.input.schema_ = schema
 
         if meta.output.schema_:
             schema = picoschema(
                 schema=meta.output.schema_,
-                options=PicoschemaOptions(
-                    schema_resolver=self._wrapped_schema_resolver()
-                )
+                schema_resolver=self._wrapped_schema_resolver()
             )
             new_meta.output.schema_ = schema
 
