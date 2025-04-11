@@ -23,7 +23,7 @@ from collections.abc import Awaitable
 from typing import Any, TypedDict, Callable
 from inspect import iscoroutinefunction
 
-from dotpromptz.srchelpers import register_all_helpers
+from dotpromptz.helpers import register_all_helpers
 from dotpromptz.parse import parse_document
 from dotpromptz.typing import (
     JsonSchema,
@@ -179,8 +179,16 @@ class Dotprompt:
         partials = set(_PARTIAL_PATTERN.findall(template))
         return partials
 
-    def render_metadata(self, source: str | ParsedPrompt, additional_metadata: PromptMetadata | None = None) -> PromptMetadata:
+    async def render_metadata(self, source: str | ParsedPrompt, additional_metadata: PromptMetadata | None = None) -> PromptMetadata:
+        """Processes and resolves all metadata for a prompt template.
 
+        Args:
+            source: The template source or parsed prompt.
+            additional_metadata: Additional metadata to include.
+
+        Returns:
+            A future or awaitable resolving to the fully processed metadata.
+        """
         match source:
             case str():
                 parsed_source = self.parse(source)
@@ -193,22 +201,19 @@ class Dotprompt:
 
         if additional_metadata is None:
             additional_metadata = ParsedPrompt(
-                    ext={},
-                    config=None,
-                    metadata={},
-                    toolDefs=None,
-                    template=source
-                )
+                ext={},
+                config=None,
+                metadata={},
+                toolDefs=None,
+                template=source
+            )
 
-        if additional_metadata is None:
-            additional_metadata = PromptMetadata()
+        selected_model = (
+            additional_metadata.model or
+            parsed_source.model or
+            self._default_model
+        )
 
-        selected_model = additional_metadata.model
-
-        if selected_model is None:
-            selected_model = parsed_source.model
-        if selected_model is None:
-            selected_model = self._default_model
 
         model_config = self._model_configs.get(selected_model, {})
 
@@ -216,22 +221,39 @@ class Dotprompt:
             parsed_source.prompt_metadata,
             additional_metadata
         ]
-        self._resolve_metadata
+        return await self._resolve_metadata(PromptMetadata(config=model_config), metadata)
 
-    def _resolver_metadata(self, base: PromptMetadata, merges: list[PromptMetadata]) -> PromptMetadata:
+    async def _resolve_metadata(self, base: PromptMetadata, merges: list[PromptMetadata]) -> PromptMetadata:
+        """Merges multiple metadata objects together, resolving tools and schemas.
+
+        Args:
+            base: The base metadata object.
+            merges: Additional metadata objects to merge into the base.
+
+        Returns:
+            The merged and processed metadata.
+        """
+
         out = base
         for merge in merges:
-            out = PromptMetadata(**{**out.model_dump(), **merge.model_dump()})
+            out = PromptMetadata(**{**out.model_dump(), **merge.model_dump(exclude_none=True)})
 
-        out = self._resolve_tools(out)
+            if out.config is not None:
+                out.config.update(merge.config or {})
 
-        if out is None:
-            return PromptMetadata()
-
+        out = await self._resolve_tools(out)
         return self._render_pico_schema(out)
 
 
     def _render_pico_schema(self, meta: PromptMetadata) -> PromptMetadata:
+        """Processes schema definitions in picoschema format into standard JSON Schema.
+
+        Args:
+            meta: The prompt metadata containing schema definitions.
+
+        Returns:
+            A processed metadata with expanded schemas.
+        """
 
         if meta.output.schema_ is None and meta.input.schema_ is None:
             return meta
@@ -239,21 +261,40 @@ class Dotprompt:
         new_meta = meta
 
         if meta.input.schema_:
-
-
-
             schema = picoschema(
-                meta.input.schema_,
-                PicoschemaOptions(
+                schema=meta.input.schema_,
+                options=PicoschemaOptions(
                     schema_resolver=self._wrapped_schema_resolver()
                 )
             )
+            new_meta.input.schema_ = schema
+
+        if meta.output.schema_:
+            schema = picoschema(
+                schema=meta.output.schema_,
+                options=PicoschemaOptions(
+                    schema_resolver=self._wrapped_schema_resolver()
+                )
+            )
+            new_meta.output.schema_ = schema
+
+        return new_meta
 
     def _wrapped_schema_resolver(self) -> Callable[[str], JsonSchema | None | Awaitable[JsonSchema | None]]:
-        def wrapper(name: str) -> JsonSchema | None | Awaitable[JsonSchema | None]:
+        """Wraps a schema resolver to return a callable that resolves schema name to its definition, using registered schemas or a schema resolver.
+
+            Returns:
+                Callable[[str], JsonSchema | None | Awaitable[JsonSchema | None]]:
+                    A function that takes a schema name and returns either the resolved schema,
+                    an awaitable resolving to it, or `None` if not found.
+        """
+        async def wrapper(name: str) -> JsonSchema | None | Awaitable[JsonSchema | None]:
 
             if schema := self._schemas.get(name):
                 return schema
+
+            if self._schema_resolver and iscoroutinefunction(self._schema_resolver):
+                return await self._schema_resolver(name)
 
             if self._schema_resolver:
                 return self._schema_resolver(name)
@@ -264,6 +305,15 @@ class Dotprompt:
 
 
     async def _resolve_tools(self, base: PromptMetadata) -> PromptMetadata | None:
+        """Resolves tool names to their definitions using registered tools or a tool resolver.
+
+        Args:
+            base: The metadata containing tool references to resolve.
+
+        Returns:
+            Metadata with the tool definitions fully resolved.
+
+        """
         out = base
         if not base.tools:
             return out
@@ -272,10 +322,9 @@ class Dotprompt:
 
         out_tools = []
         for tool_name in out.tools:
-
-            if tool := self._tools.get(tool_name):
+            if tool := self._tools.get(tool_name) and out.tool_defs:
                 out.tool_defs.append(tool)
-            elif not self._tool_resolver:
+            elif self._tool_resolver is not None:
                 if iscoroutinefunction(self._tool_resolver):
                     resolved_tool = await self._tool_resolver(tool_name)
                 else:
@@ -283,24 +332,12 @@ class Dotprompt:
 
                 if resolved_tool is None:
                     return None
-                # there is some required field for ToolDefinition
-                elif resolved_tool == ToolDefinition():
-                    return None
-
-                out.tool_defs.append(resolved_tool)
+                if out.tool_defs:
+                    out.tool_defs.append(resolved_tool)
             else:
                 out_tools.append(tool_name)
 
         out.tools = out_tools
 
         return out
-
-
-
-    def compile(self, source: str, additional_metadata: PromptMetadata) -> Callable[[DataArgument, PromptMetadata], RenderedPrompt]:
-
-        def wrapper(data: DataArgument, options: PromptMetadata) -> RenderedPrompt:
-            pass
-
-        return wrapper
 
