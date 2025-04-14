@@ -19,14 +19,19 @@
 from __future__ import annotations
 
 import re
+
+
+import anyio
 from collections.abc import Awaitable
-from typing import Any, TypedDict, Callable
+from typing import Any, Callable
 from inspect import iscoroutinefunction
 
 from dotpromptz.helpers import register_all_helpers
 from dotpromptz.parse import parse_document
+from dotpromptz.resolvers import resolve_tool
 from dotpromptz.typing import (
     JsonSchema,
+    ModelConfigT,
     ParsedPrompt,
     PartialResolver,
     PromptStore,
@@ -44,10 +49,6 @@ from handlebarrz import EscapeFunction, Handlebars, HelperFn
 # to walk the AST to find partial nodes, we're using a crude regular expression
 # to find partials.
 _PARTIAL_PATTERN = re.compile(r'{{\s*>\s*([a-zA-Z0-9_.-]+)\s*}}')
-
-
-class Options(TypedDict, total=False):
-    """Options for dotprompt."""
 
 
 class Dotprompt:
@@ -149,7 +150,7 @@ class Dotprompt:
         self._tools[name] = definition
         return self
 
-    def parse(self, source: str) -> ParsedPrompt[Any] | None:
+    def parse(self, source: str) -> ParsedPrompt[Any]:
         """Parse a prompt from a string.
 
         Args:
@@ -160,7 +161,7 @@ class Dotprompt:
         """
         return parse_document(source)
 
-    def identify_partials(self, template: str) -> set[str]:
+    def _identify_partials(self, template: str) -> set[str]:
         """Identify all partial references in a template.
 
         Args:
@@ -169,8 +170,73 @@ class Dotprompt:
         Returns:
             A set of partial names referenced in the template.
         """
-        partials = set(_PARTIAL_PATTERN.findall(template))
-        return partials
+        return set(_PARTIAL_PATTERN.findall(template))
+
+    async def _resolve_tools(self, metadata: PromptMetadata[ModelConfigT]) -> PromptMetadata[ModelConfigT]:
+        """Resolve all tools in a prompt.
+
+        Args:
+            metadata: The prompt metadata.
+
+        Returns:
+            A copy of the prompt metadata with the tools resolved.
+
+        Raises:
+            ToolNotFoundError: If a tool is not found in the resolver or store.
+            ToolResolverFailedError: If a tool resolver fails.
+            TypeError: If a tool resolver returns an invalid type.
+            ValueError: If a tool resolver is not defined.
+        """
+        out: PromptMetadata[ModelConfigT] = metadata.copy()
+        if out.tools is None:
+            return out
+
+        # Resolve tools that are already registered into toolDefs, leave
+        # unregistered tools alone.
+        unregistered_names: list[str] = []
+        out.tool_defs = out.tool_defs or []
+
+        # Collect all the tools:
+        # 1. Already registered go into toolDefs.
+        # 2. If we have a tool resolver, add the names to the list to resolve.
+        # 3. Otherwise, add the names to the list of unregistered tools.
+        to_resolve: list[str] = []
+        have_resolver = self._tool_resolver is not None
+        for name in out.tools:
+            if name in self._tools:
+                # Found locally.
+                out.tool_defs.append(self._tools[name])
+            elif have_resolver:
+                # Resolve from the tool resolver.
+                to_resolve.append(name)
+            else:
+                # Unregistered tool.
+                unregistered_names.append(name)
+
+        if to_resolve:
+
+            async def resolve_and_append(name: str) -> None:
+                """Resolve a tool and append it to the list of tools.
+
+                Args:
+                    name: The name of the tool to resolve.
+
+                Raises:
+                    ToolNotFoundError: If a tool is not found in the resolver or store.
+                    ToolResolverFailedError: If a tool resolver fails.
+                    TypeError: If a tool resolver returns an invalid type.
+                    ValueError: If a tool resolver is not defined.
+                """
+                tool = await resolve_tool(name, self._tool_resolver)
+                if out.tool_defs is not None:
+                    out.tool_defs.append(tool)
+
+            async with anyio.create_task_group() as tg:
+                for name in to_resolve:
+                    tg.start_soon(resolve_and_append, name)
+
+        out.tools = unregistered_names
+        return out
 
     async def render_metadata(self, source: str | ParsedPrompt, additional_metadata: PromptMetadata | None = None) -> PromptMetadata:
         """Processes and resolves all metadata for a prompt template.
