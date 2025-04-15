@@ -28,6 +28,7 @@ from inspect import iscoroutinefunction
 
 from dotpromptz.helpers import register_all_helpers
 from dotpromptz.parse import parse_document
+from dotpromptz.picoschema import picoschema_to_json_schema
 from dotpromptz.resolvers import resolve_json_schema, resolve_partial, resolve_tool
 from dotpromptz.typing import (
     JsonSchema,
@@ -39,7 +40,6 @@ from dotpromptz.typing import (
     SchemaResolver,
     ToolDefinition,
     ToolResolver,
-    PromptMetadata,
 )
 from dotpromptz.picoschema import picoschema
 from handlebarrz import EscapeFunction, Handlebars, HelperFn
@@ -162,6 +162,47 @@ class Dotprompt:
         """
         return parse_document(source)
 
+    async def _render_picoschema(self, meta: PromptMetadata[ModelConfigT]) -> PromptMetadata[ModelConfigT]:
+        """Render a Picoschema prompt.
+
+        Args:
+            meta: The prompt metadata.
+
+        Returns:
+            The rendered prompt metadata.
+        """
+        needs_input_processing = meta.input is not None and meta.input.schema_ is not None
+        needs_output_processing = meta.output is not None and meta.output.schema_ is not None
+
+        if not needs_input_processing and not needs_output_processing:
+            return meta
+
+        new_meta = meta.model_copy(deep=True)
+
+        async def _process_input_schema(schema_to_process: Any) -> None:
+            if new_meta.input is not None:
+                new_meta.input.schema_ = await picoschema_to_json_schema(
+                    schema_to_process,
+                    self._resolve_json_schema,
+                )
+
+        async def _process_output_schema(schema_to_process: Any) -> None:
+            if new_meta.output is not None:
+                new_meta.output.schema_ = await picoschema_to_json_schema(
+                    schema_to_process,
+                    self._resolve_json_schema,
+                )
+
+        async with anyio.create_task_group() as tg:
+            if needs_input_processing and meta.input is not None:
+                # TODO: use meta.input.model_dump(exclude_none=True)?
+                tg.start_soon(_process_input_schema, meta.input.schema_)
+            if needs_output_processing and meta.output is not None:
+                # TODO: use meta.output.model_dump(exclude_none=True)?
+                tg.start_soon(_process_output_schema, meta.output.schema_)
+
+        return new_meta
+
     def _identify_partials(self, template: str) -> set[str]:
         """Identify all unique partial references in a template.
 
@@ -188,7 +229,7 @@ class Dotprompt:
             TypeError: If a tool resolver returns an invalid type.
             ValueError: If a tool resolver is not defined.
         """
-        out: PromptMetadata[ModelConfigT] = metadata.model_copy()
+        out: PromptMetadata[ModelConfigT] = metadata.model_copy(deep=True)
         if out.tools is None:
             return out
 
@@ -227,9 +268,7 @@ class Dotprompt:
                     TypeError: If a tool resolver returns an invalid type.
                     ValueError: If a tool resolver is not defined.
                 """
-
                 tool = await resolve_tool(name, self._tool_resolver)
-
                 if out.tool_defs is not None:
                     out.tool_defs.append(tool)
 
@@ -294,7 +333,7 @@ class Dotprompt:
 
     # NOTE: Equivalent to wrappedSchemaResolver in the TS implementation.
     async def _resolve_json_schema(self, name: str) -> JsonSchema | None:
-        """Resolve a schema from the resolver or store and register it.
+        """Resolve a schema from either instance local mapping or the resolver.
 
         Args:
             name: The name of the schema to resolve.
@@ -308,6 +347,7 @@ class Dotprompt:
         if self._schema_resolver is None:
             return None
 
+        # TODO: Should we cache the resolved schema in self._schemas?
         return await resolve_json_schema(name, self._schema_resolver)
 
     async def render_metadata(self, source: str | ParsedPrompt, additional_metadata: PromptMetadata | None = None) -> PromptMetadata:
