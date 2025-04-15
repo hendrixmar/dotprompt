@@ -40,8 +40,7 @@ import anyio
 import pytest
 from unittest.mock import AsyncMock
 
-from dotpromptz.dotprompt import Dotprompt, Options
-from dotpromptz.typing import ParsedPrompt, ToolDefinition, PromptMetadata
+from dotpromptz.typing import PromptMetadata
 from dotpromptz.dotprompt import Dotprompt
 from dotpromptz.typing import ParsedPrompt, ToolDefinition
 from handlebarrz import HelperFn

@@ -19,12 +19,11 @@
 from __future__ import annotations
 
 import re
-from inspect import iscoroutinefunction
-from typing import Any, Awaitable
+
 
 import anyio
 from collections.abc import Awaitable
-from typing import Any, Callable, TypedDict
+from typing import Any
 from inspect import iscoroutinefunction
 
 from dotpromptz.helpers import register_all_helpers
@@ -51,10 +50,6 @@ from handlebarrz import EscapeFunction, Handlebars, HelperFn
 # to walk the AST to find partial nodes, we're using a crude regular expression
 # to find partials.
 _PARTIAL_PATTERN = re.compile(r'{{\s*>\s*([a-zA-Z0-9_.-]+)\s*}}')
-
-
-class Options(TypedDict, total=False):
-    """Options for dotprompt."""
 
 
 class Dotprompt:
@@ -325,7 +320,6 @@ class Dotprompt:
         Returns:
             A future or awaitable resolving to the fully processed metadata.
         """
-        breakpoint()
         match source:
             case str():
                 parsed_source = self.parse(source)
@@ -339,18 +333,10 @@ class Dotprompt:
         )
 
         model_config = self._model_configs.get(selected_model, None)
-
-        metadata = [
-            additional_metadata
-        ]
-
         _ = PromptMetadata.model_validate(parsed_source.model_dump(exclude={"template"}), from_attributes=True)
-        breakpoint()
-
         param_merge = _.model_copy(update={"config": model_config} if model_config else {})
-        result = await self._resolve_metadata(param_merge, *metadata)
-        breakpoint()
 
+        result = await self._resolve_metadata(param_merge, additional_metadata)
         return result
 
     async def _resolve_metadata(self, base: PromptMetadata, *merges: PromptMetadata) -> PromptMetadata:
