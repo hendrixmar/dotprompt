@@ -41,7 +41,6 @@ from dotpromptz.typing import (
     ToolDefinition,
     ToolResolver,
 )
-from dotpromptz.picoschema import picoschema
 from handlebarrz import EscapeFunction, Handlebars, HelperFn
 
 # Pre-compiled regex for finding partial references in handlebars templates
@@ -399,7 +398,7 @@ class Dotprompt:
                 out.config.update(merge.config or {})
 
         out = await self._resolve_tools(out)
-        out = self._render_pico_schema(out)
+        out = await self._render_picoschema(out)
         return out
 
 
@@ -421,14 +420,14 @@ class Dotprompt:
         if meta.input.schema_:
             schema = picoschema(
                 schema=meta.input.model_dump(exclude_none=True),
-                schema_resolver=self._wrapped_schema_resolver
+                schema_resolver=self._resolve_json_schema
             )
             new_meta.input = schema
 
         if meta.output.schema_:
             schema = picoschema(
                 schema=meta.output.model_dump(exclude_none=True),
-                schema_resolver=self._wrapped_schema_resolver
+                schema_resolver=self._resolve_json_schema
             )
             new_meta.output = schema
 

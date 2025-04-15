@@ -31,9 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from bdb import Breakpoint
 from collections.abc import Generator
-from typing import Any, cast
+from typing import Any
 from unittest.mock import Mock, patch
 
 import anyio
@@ -291,7 +290,7 @@ class TestResolveTools(unittest.TestCase):
 
 class TestRenderPicoSchema(unittest.TestCase):
     @patch(
-        "dotpromptz.dotprompt.picoschema",
+        "dotpromptz.dotprompt.picoschema_to_json_schema",
         return_value={"type": "object", "properties": {"expanded": True}})
     def test_process_valid_picoschema_definition(self, _):
         """should process picoschema definitions"""
@@ -310,9 +309,9 @@ class TestRenderPicoSchema(unittest.TestCase):
             "properties": {"expanded": True}
         }
         # Now call the function that uses picoschema.picoschema internally
-        result: PromptMetadata = dotprompt._render_pico_schema(metadata)
-        assert result.input == values_assert
-        assert result.output  == values_assert
+        result: PromptMetadata = asyncio.run(dotprompt._render_picoschema(metadata))
+        assert result.input.schema_ == values_assert
+        assert result.output.schema_  == values_assert
 
 
 
@@ -334,7 +333,7 @@ class TestRenderPicoSchema(unittest.TestCase):
             "properties": {"expanded": True}
         }
         # Now call the function that uses picoschema.picoschema internally
-        result: PromptMetadata = dotprompt._render_pico_schema(metadata)
+        result: PromptMetadata = asyncio.run(dotprompt._render_picoschema(metadata))
         assert result == metadata
 
 class TestwrappedSchemaResolver(unittest.TestCase):
@@ -415,10 +414,10 @@ class TestResolveMetaData(unittest.TestCase):
                 "max_tokens": 2000,
             },
         })
-        render_pico_mock = Mock(side_effect=lambda arg: arg)
+        render_pico_mock = AsyncMock(side_effect=lambda arg: arg)
         resolve_tools_mock = AsyncMock(side_effect=lambda arg: arg)
         dotprompt._resolve_tools = resolve_tools_mock
-        dotprompt._render_pico_schema = render_pico_mock
+        dotprompt._render_picoschema = render_pico_mock
 
         result = asyncio.run(dotprompt._resolve_metadata(base,merge1, merge2))
         self.assertEqual(result.model, 'gemini-2.0-flash')
