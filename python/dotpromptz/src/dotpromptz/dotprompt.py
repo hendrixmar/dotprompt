@@ -23,7 +23,7 @@ import re
 
 import anyio
 from collections.abc import Awaitable
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 from inspect import iscoroutinefunction
 
 from dotpromptz.helpers import register_all_helpers
@@ -49,6 +49,10 @@ from handlebarrz import EscapeFunction, Handlebars, HelperFn
 # to walk the AST to find partial nodes, we're using a crude regular expression
 # to find partials.
 _PARTIAL_PATTERN = re.compile(r'{{\s*>\s*([a-zA-Z0-9_.-]+)\s*}}')
+
+
+class Options(TypedDict, total=False):
+    """Options for dotprompt."""
 
 
 class Dotprompt:
@@ -137,7 +141,7 @@ class Dotprompt:
         self._handlebars.register_partial(name, source)
         return self
 
-    def define_tool(self, name: str, definition: ToolDefinition) -> Dotprompt:
+    def define_tool(self, definition: ToolDefinition) -> Dotprompt:
         """Define a tool for the template.
 
         Args:
@@ -147,7 +151,7 @@ class Dotprompt:
         Returns:
             The Dotprompt instance.
         """
-        self._tools[name] = definition
+        self._tools[definition.name] = definition
         return self
 
     def parse(self, source: str) -> ParsedPrompt[Any]:
@@ -187,7 +191,7 @@ class Dotprompt:
             TypeError: If a tool resolver returns an invalid type.
             ValueError: If a tool resolver is not defined.
         """
-        out: PromptMetadata[ModelConfigT] = metadata.copy()
+        out: PromptMetadata[ModelConfigT] = metadata.model_copy()
         if out.tools is None:
             return out
 
@@ -214,7 +218,6 @@ class Dotprompt:
                 unregistered_names.append(name)
 
         if to_resolve:
-
             async def resolve_and_append(name: str) -> None:
                 """Resolve a tool and append it to the list of tools.
 
@@ -227,13 +230,20 @@ class Dotprompt:
                     TypeError: If a tool resolver returns an invalid type.
                     ValueError: If a tool resolver is not defined.
                 """
+
                 tool = await resolve_tool(name, self._tool_resolver)
+
                 if out.tool_defs is not None:
                     out.tool_defs.append(tool)
 
-            async with anyio.create_task_group() as tg:
-                for name in to_resolve:
-                    tg.start_soon(resolve_and_append, name)
+            try:
+                async with anyio.create_task_group() as tg:
+                    for name in to_resolve:
+                        tg.start_soon(resolve_and_append, name)
+            except ExceptionGroup:
+                raise Exception(
+                    f"Dotprompt: Unable to resolve tool '{name}' to a recognized tool definition."
+                )
 
         out.tools = unregistered_names
         return out
@@ -248,41 +258,35 @@ class Dotprompt:
         Returns:
             A future or awaitable resolving to the fully processed metadata.
         """
+        breakpoint()
         match source:
             case str():
                 parsed_source = self.parse(source)
-                if parsed_source is None:
-                    return PromptMetadata()
-            case ParsedPrompt():
-                parsed_source = source
             case _:
-                return PromptMetadata()
-
-        if additional_metadata is None:
-            additional_metadata = ParsedPrompt(
-                ext={},
-                config=None,
-                metadata={},
-                toolDefs=None,
-                template=source
-            )
+                parsed_source = source
 
         selected_model = (
-            additional_metadata.model or
+            (additional_metadata and additional_metadata.model) or
             parsed_source.model or
             self._default_model
         )
 
-
-        model_config = self._model_configs.get(selected_model, {})
+        model_config = self._model_configs.get(selected_model, None)
 
         metadata = [
-            parsed_source.prompt_metadata,
             additional_metadata
         ]
-        return await self._resolve_metadata(PromptMetadata(config=model_config), metadata)
 
-    async def _resolve_metadata(self, base: PromptMetadata, merges: list[PromptMetadata]) -> PromptMetadata:
+        _ = PromptMetadata.model_validate(parsed_source.model_dump(exclude={"template"}), from_attributes=True)
+        breakpoint()
+
+        param_merge = _.model_copy(update={"config": model_config} if model_config else {})
+        result = await self._resolve_metadata(param_merge, *metadata)
+        breakpoint()
+
+        return result
+
+    async def _resolve_metadata(self, base: PromptMetadata, *merges: PromptMetadata) -> PromptMetadata:
         """Merges multiple metadata objects together, resolving tools and schemas.
 
         Args:
@@ -292,16 +296,18 @@ class Dotprompt:
         Returns:
             The merged and processed metadata.
         """
-
         out = base
         for merge in merges:
-            out = PromptMetadata(**{**out.model_dump(), **merge.model_dump(exclude_none=True)})
+            if merge is None:
+                continue
+            out = PromptMetadata(**{**out.model_dump(), **merge.model_dump(exclude_none=True, exclude={'config'})})
 
-            if out.config is not None:
+            if merge.config is not None:
                 out.config.update(merge.config or {})
 
         out = await self._resolve_tools(out)
-        return self._render_pico_schema(out)
+        out = self._render_pico_schema(out)
+        return out
 
 
     def _render_pico_schema(self, meta: PromptMetadata) -> PromptMetadata:
@@ -321,21 +327,21 @@ class Dotprompt:
 
         if meta.input.schema_:
             schema = picoschema(
-                schema=meta.input.schema_,
-                schema_resolver=self._wrapped_schema_resolver()
+                schema=meta.input.model_dump(exclude_none=True),
+                schema_resolver=self._wrapped_schema_resolver
             )
-            new_meta.input.schema_ = schema
+            new_meta.input = schema
 
         if meta.output.schema_:
             schema = picoschema(
-                schema=meta.output.schema_,
-                schema_resolver=self._wrapped_schema_resolver()
+                schema=meta.output.model_dump(exclude_none=True),
+                schema_resolver=self._wrapped_schema_resolver
             )
-            new_meta.output.schema_ = schema
+            new_meta.output = schema
 
         return new_meta
 
-    def _wrapped_schema_resolver(self) -> Callable[[str], JsonSchema | None | Awaitable[JsonSchema | None]]:
+    async def _wrapped_schema_resolver(self, name ) -> JsonSchema | None | Awaitable[JsonSchema | None]:
         """Wraps a schema resolver to return a callable that resolves schema name to its definition, using registered schemas or a schema resolver.
 
             Returns:
@@ -343,56 +349,20 @@ class Dotprompt:
                     A function that takes a schema name and returns either the resolved schema,
                     an awaitable resolving to it, or `None` if not found.
         """
-        async def wrapper(name: str) -> JsonSchema | None | Awaitable[JsonSchema | None]:
 
-            if schema := self._schemas.get(name):
-                return schema
+        if schema := self._schemas.get(name):
+            return schema
 
-            if self._schema_resolver and iscoroutinefunction(self._schema_resolver):
-                return await self._schema_resolver(name)
+        if self._schema_resolver and iscoroutinefunction(self._schema_resolver):
+            return await self._schema_resolver(name)
 
-            if self._schema_resolver:
-                return self._schema_resolver(name)
+        if self._schema_resolver:
+            return self._schema_resolver(name)
 
-            return None
-
-        return wrapper
+        return None
 
 
-    async def _resolve_tools(self, base: PromptMetadata) -> PromptMetadata | None:
-        """Resolves tool names to their definitions using registered tools or a tool resolver.
 
-        Args:
-            base: The metadata containing tool references to resolve.
 
-        Returns:
-            Metadata with the tool definitions fully resolved.
 
-        """
-        out = base
-        if not base.tools:
-            return out
-        if out.tool_defs is None:
-            out.tool_defs = []
-
-        out_tools = []
-        for tool_name in out.tools:
-            if tool := self._tools.get(tool_name) and out.tool_defs:
-                out.tool_defs.append(tool)
-            elif self._tool_resolver is not None:
-                if iscoroutinefunction(self._tool_resolver):
-                    resolved_tool = await self._tool_resolver(tool_name)
-                else:
-                    resolved_tool = self._tool_resolver(tool_name)
-
-                if resolved_tool is None:
-                    return None
-                if out.tool_defs:
-                    out.tool_defs.append(resolved_tool)
-            else:
-                out_tools.append(tool_name)
-
-        out.tools = out_tools
-
-        return out
 

@@ -305,7 +305,7 @@ class PromptMetadata(HasMetadata, Generic[ModelConfigT]):
     output: PromptOutputConfig | None = None
     raw: dict[str, Any] | None = None
     ext: dict[str, dict[str, Any]] | None = None
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra='ignore')
 
 
 class ParsedPrompt(PromptMetadata[ModelConfigT], Generic[ModelConfigT]):
@@ -315,7 +315,6 @@ class ParsedPrompt(PromptMetadata[ModelConfigT], Generic[ModelConfigT]):
         template: The core template string, with frontmatter removed.
     """
     template: str
-    prompt_metadata: PromptMetadata
 
 
 class TextPart(HasMetadata):

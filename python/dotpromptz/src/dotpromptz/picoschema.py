@@ -243,7 +243,6 @@ class PicoschemaParser:
         """
         if not schema:
             return None
-
         if isinstance(schema, str):
             type_name, description = extract_description(schema)
             if type_name in JSON_SCHEMA_SCALAR_TYPES:
@@ -265,6 +264,8 @@ class PicoschemaParser:
 
         if isinstance(schema, dict) and isinstance(schema.get('properties'), dict):
             return {**cast(JsonSchema, schema), 'type': 'object'}
+
+
 
         return self.parse_pico(schema)
 

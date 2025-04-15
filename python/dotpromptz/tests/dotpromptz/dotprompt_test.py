@@ -29,12 +29,19 @@ The tests cover:
 
 from __future__ import annotations
 
+import asyncio
+import unittest
+from bdb import Breakpoint
 from collections.abc import Generator
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
+import anyio
 import pytest
+from unittest.mock import AsyncMock
 
+from dotpromptz.dotprompt import Dotprompt, Options
+from dotpromptz.typing import ParsedPrompt, ToolDefinition, PromptMetadata
 from dotpromptz.dotprompt import Dotprompt
 from dotpromptz.typing import ParsedPrompt, ToolDefinition
 from handlebarrz import HelperFn
@@ -127,16 +134,15 @@ def test_define_partial(mock_handlebars: Mock) -> None:
 def test_define_tool(mock_handlebars: Mock) -> None:
     """Test defining a tool."""
     dotprompt = Dotprompt()
-    tool_def = cast(
-        ToolDefinition,
-        {
+    tool_def = ToolDefinition(
+        **{
             'name': 'test_tool',
             'description': 'A test tool',
             'input_schema': {'type': 'object'},
         },
     )
 
-    result = dotprompt.define_tool('test_tool', tool_def)
+    result = dotprompt.define_tool( tool_def)
 
     assert dotprompt._tools['test_tool'] == tool_def
 
@@ -164,13 +170,12 @@ def test_chainable_interface(mock_handlebars: Mock) -> None:
     mock_handlebars.register_helper.reset_mock()
     mock_handlebars.register_partial.reset_mock()
 
-    tool_def = cast(
-        ToolDefinition,
-        {
+    tool_def = ToolDefinition(
+        **{
             'name': 'tool1',
             'description': 'Tool 1',
             'input_schema': {'type': 'object'},
-        },
+        }
     )
 
     def helper_fn(params: list[Any], hash_args: dict[str, Any], ctx: dict[str, Any]) -> str:
@@ -179,7 +184,7 @@ def test_chainable_interface(mock_handlebars: Mock) -> None:
     result = (
         dotprompt.define_helper('helper1', helper_fn)
         .define_partial('partial1', 'content')
-        .define_tool('tool1', tool_def)
+        .define_tool(tool_def)
     )
 
     mock_handlebars.register_helper.assert_called_once()
@@ -211,3 +216,268 @@ def test_identify_partials(template: str, expected: set[str]) -> None:
     dotprompt = Dotprompt()
     partials = dotprompt._identify_partials(template)
     assert partials == expected
+
+class TestResolveTools(unittest.TestCase):
+    def test_resolve_returns_correct_tool_when_registered(self):
+        """should resolve registered tools"""
+        dotprompt = Dotprompt()
+
+        tool_def = ToolDefinition(
+            **{
+                'name': 'testTool',
+                'description': 'A test tool',
+                'inputSchema': {
+                    'type': 'object',
+                    'properties': {
+                        'param1': {'type': 'string'},
+                    },
+                },
+            }
+        )
+
+        dotprompt.define_tool(tool_def)
+        metadata = PromptMetadata(
+            **{'tools': ['testTool', 'unknownTool']}
+        )
+
+        result = asyncio.run(dotprompt._resolve_tools(metadata))
+
+        assert result.tool_defs is not None
+        assert len(result.tool_defs) == 1
+        assert result.tool_defs[0] == tool_def
+        assert result.tools == ['unknownTool']
+
+
+    def test_resolve_raises_error_for_unregistered_tool(self):
+        """should use the tool resolver for unregistered tools"""
+        tool_def = ToolDefinition(
+            **{
+                'name': 'resolvedTool',
+                'description': 'A test tool',
+                'inputSchema': {
+                    'type': 'object',
+                    'properties': {
+                        'param1': {'type': 'string'},
+                    },
+                },
+            }
+        )
+
+        resolve_metadata_mock = AsyncMock(return_value=tool_def)
+        dotprompt = Dotprompt(tool_resolver=resolve_metadata_mock)
+        metadata = PromptMetadata(
+            tools=['resolvedTool']
+        )
+        result = asyncio.run(dotprompt._resolve_tools(metadata))
+        resolve_metadata_mock.assert_called_with('resolvedTool')
+        assert result.tool_defs is not None
+        assert len(result.tool_defs) == 1
+        assert result.tool_defs[0] == tool_def
+        assert result.tools == []
+
+    def test_tool_resolver_throws_error_when_returns_null(self):
+        """should throw an error when the tool resolver returns null"""
+        resolve_metadata_mock = AsyncMock(return_value=None)
+        dotprompt = Dotprompt(tool_resolver=resolve_metadata_mock)
+
+        metadata = PromptMetadata(
+            tools=['nonExistentTool']
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(dotprompt._resolve_tools(metadata))
+
+        exception_error = "Dotprompt: Unable to resolve tool 'nonExistentTool' to a recognized tool definition."
+        assert str(exc_info.value) == exception_error
+
+class TestRenderPicoSchema(unittest.TestCase):
+    @patch(
+        "dotpromptz.dotprompt.picoschema",
+        return_value={"type": "object", "properties": {"expanded": True}})
+    def test_process_valid_picoschema_definition(self, _):
+        """should process picoschema definitions"""
+        dotprompt = Dotprompt()
+
+        metadata = PromptMetadata(**{
+            'input': {
+                'schema': {'type': 'string'},
+            },
+            'output': {
+                'schema': {'type': 'number'},
+            },
+        })
+        values_assert = {
+            "type": "object",
+            "properties": {"expanded": True}
+        }
+        # Now call the function that uses picoschema.picoschema internally
+        result: PromptMetadata = dotprompt._render_pico_schema(metadata)
+        assert result.input == values_assert
+        assert result.output  == values_assert
+
+
+
+    def test_returns_original_metadata_when_no_schemas_present(_self):
+        """Test that the original metadata is returned unchanged when no schemas are present."""
+        dotprompt = Dotprompt()
+
+        metadata = PromptMetadata(**{
+            'input': {
+                'schema': {'type': 'string'},
+            },
+            'output': {
+                'schema': {'type': 'number'},
+            },
+            'model': 'gemini-1.5-pro',
+        })
+        values_assert = {
+            "type": "object",
+            "properties": {"expanded": True}
+        }
+        # Now call the function that uses picoschema.picoschema internally
+        result: PromptMetadata = dotprompt._render_pico_schema(metadata)
+        assert result == metadata
+
+class TestwrappedSchemaResolver(unittest.TestCase):
+    def test_resolves_schemas_from_registered_schemas(self):
+        """should resolve schemas from the registered schemas."""
+        schemas: dict[str, dict] = {
+            "test-schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+            },
+        }
+
+        dotprompt = Dotprompt(schemas=schemas)
+
+        result = asyncio.run(dotprompt._wrapped_schema_resolver('test-schema'))
+
+        self.assertEqual(result, schemas['test-schema'])
+
+    def test_uses_schema_resolver_for_unregistered_schemas(self):
+        """should use the schema resolver for unregistered schemas"""
+        schema_resolver_mock = AsyncMock(return_value={
+            "type": "object",
+            "properties": {
+                "resolved": {"type": "boolean"}
+                }
+            }
+        )
+
+        dotprompt = Dotprompt(schema_resolver=schema_resolver_mock)
+
+        result = asyncio.run(dotprompt._wrapped_schema_resolver('external-schema'))
+        schema_resolver_mock.assert_called_with(
+            'external-schema'
+        )
+
+        self.assertEqual(result ,{
+            "type": "object",
+            "properties": {
+                "resolved": {"type": "boolean"}
+                }
+            }
+        )
+
+
+    def test_returns_none_if_schema_not_found_and_no_resolver(self):
+        """should return null if schema not found and no resolver"""
+        dotprompt = Dotprompt()
+
+        result = asyncio.run(dotprompt._wrapped_schema_resolver('non-existent-schema'))
+        self.assertIsNone(result)
+
+
+class TestResolveMetaData(unittest.TestCase):
+
+    def test_merge_multiple_metadata(self):
+        """should merge multiple metadata objects"""
+        dotprompt = Dotprompt()
+
+        base = PromptMetadata.model_validate({
+            "model": "gemini-1.5-pro",
+            "config": {
+                "temperature": 0.7,
+            },
+        })
+
+        merge1 = PromptMetadata.model_validate({
+            "config": {
+                "top_p": 0.9,
+            },
+            "tools": ["tool1"],
+        })
+
+        merge2 = PromptMetadata.model_validate({
+            "model": "gemini-2.0-flash",
+            "config": {
+                "max_tokens": 2000,
+            },
+        })
+        render_pico_mock = Mock(side_effect=lambda arg: arg)
+        resolve_tools_mock = AsyncMock(side_effect=lambda arg: arg)
+        dotprompt._resolve_tools = resolve_tools_mock
+        dotprompt._render_pico_schema = render_pico_mock
+
+        result = asyncio.run(dotprompt._resolve_metadata(base,merge1, merge2))
+        self.assertEqual(result.model, 'gemini-2.0-flash')
+        self.assertEqual(result.config, {
+            "top_p": 0.9,
+            "max_tokens": 2000,
+            "temperature": 0.7,
+        })
+
+        self.assertEqual(result.tools, ['tool1'])
+        render_pico_mock.assert_called()
+        resolve_tools_mock.assert_called()
+
+    def test_handle_undefined_merges(self):
+        """should handle undefined merges"""
+
+        dotprompt = Dotprompt()
+
+        base = PromptMetadata.model_validate({
+            "model": "gemini-1.5-pro",
+            "config": {
+                "temperature": 0.7,
+            },
+        })
+
+        render_pico_mock = Mock(side_effect=lambda arg: arg)
+        resolve_tools_mock = AsyncMock(side_effect=lambda arg: arg)
+        dotprompt._resolve_tools = resolve_tools_mock
+        dotprompt._render_pico_schema = render_pico_mock
+
+        result = asyncio.run(dotprompt._resolve_metadata(base))
+
+        self.assertEqual(result.model, 'gemini-1.5-pro')
+        self.assertEqual(result.config, {
+                "temperature": 0.7,
+            })
+
+
+
+
+
+def test_render_metadata():
+    dotprompt = Dotprompt()
+
+    parsed_source = ParsedPrompt(
+        template='Template content',
+        model='gemini-1.5-pro'
+    )
+    resolve_metadata_mock = AsyncMock(return_value=PromptMetadata(
+        model= "gemini-1.5-pro",
+    ))
+    dotprompt._resolve_metadata = resolve_metadata_mock
+
+    result = asyncio.run(dotprompt.render_metadata(parsed_source))
+
+    resolve_metadata_mock.assert_called_with(
+        PromptMetadata(model='gemini-1.5-pro'), None,
+
+    )
+
+
