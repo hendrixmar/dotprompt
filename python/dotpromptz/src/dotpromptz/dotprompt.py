@@ -42,6 +42,10 @@ from dotpromptz.typing import (
     ToolResolver,
 )
 from handlebarrz import EscapeFunction, Handlebars, HelperFn
+import sys
+
+if sys.version_info.major == 3 and sys.version_info.minor == 10:
+    from exceptiongroup import ExceptionGroup
 
 # Pre-compiled regex for finding partial references in handlebars templates
 
@@ -418,14 +422,14 @@ class Dotprompt:
         new_meta = meta
 
         if meta.input.schema_:
-            schema = picoschema(
+            schema = picoschema_to_json_schema(
                 schema=meta.input.model_dump(exclude_none=True),
                 schema_resolver=self._resolve_json_schema
             )
             new_meta.input = schema
 
         if meta.output.schema_:
-            schema = picoschema(
+            schema = picoschema_to_json_schema(
                 schema=meta.output.model_dump(exclude_none=True),
                 schema_resolver=self._resolve_json_schema
             )
