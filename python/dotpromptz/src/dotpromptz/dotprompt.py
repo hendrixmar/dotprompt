@@ -145,7 +145,6 @@ class Dotprompt:
         """Define a tool for the template.
 
         Args:
-            name: The name of the tool.
             definition: The definition of the tool.
 
         Returns:
@@ -186,14 +185,14 @@ class Dotprompt:
             if new_meta.input is not None:
                 new_meta.input.schema_ = await picoschema_to_json_schema(
                     schema_to_process,
-                    self._resolve_json_schema,
+                    self._wrapped_schema_resolver,
                 )
 
         async def _process_output_schema(schema_to_process: Any) -> None:
             if new_meta.output is not None:
                 new_meta.output.schema_ = await picoschema_to_json_schema(
                     schema_to_process,
-                    self._resolve_json_schema,
+                    self._wrapped_schema_resolver,
                 )
 
         async with anyio.create_task_group() as tg:
@@ -334,8 +333,7 @@ class Dotprompt:
             for name in unregistered_names:
                 tg.start_soon(resolve_and_register, name)
 
-    # NOTE: Equivalent to wrappedSchemaResolver in the TS implementation.
-    async def _resolve_json_schema(self, name: str) -> JsonSchema | None:
+    async def _wrapped_schema_resolver(self, name: str) -> JsonSchema | None:
         """Resolve a schema from either instance local mapping or the resolver.
 
         Args:
