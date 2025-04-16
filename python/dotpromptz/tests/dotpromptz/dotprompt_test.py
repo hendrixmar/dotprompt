@@ -442,7 +442,7 @@ def test_render_metadata() -> None:
         assert result == PromptMetadata(model='gemini-1.5-pro')
 
 
-def test_default_model_when_null():
+def test_default_model_when_null() -> None:
     """should use the default model when no model is specified"""
     dotprompt = Dotprompt()
 
@@ -455,24 +455,20 @@ def test_default_model_when_null():
         )
     )
 
-
     with patch.object(dotprompt, '_resolve_metadata', resolve_metadata_mock):
         result = asyncio.run(dotprompt.render_metadata(parsed_source))
         resolve_metadata_mock.assert_called()
 
     assert result == PromptMetadata(
-            model='default-model',
-        )
+        model='default-model',
+    )
 
 
-
-
-
-def test_use_available_model_config():
+def test_use_available_model_config() -> None:
     """should use model configs when available"""
 
     model_configs = {
-        'gemini-1.5-pro': {"temperature": 0.7},
+        'gemini-1.5-pro': {'temperature': 0.7},
     }
     dotprompt = Dotprompt(model_configs=model_configs)
 
@@ -481,28 +477,15 @@ def test_use_available_model_config():
         model='gemini-1.5-pro',
     )
 
-    def wrapper(base: PromptMetadata[ModelConfigT], *merges: PromptMetadata[ModelConfigT]):
-        return PromptMetadata.model_validate({
-            **merges[0].model_dump(),
-            "config": base.config
+    def wrapper(
+        base: PromptMetadata[ModelConfigT], *merges: PromptMetadata[ModelConfigT]
+    ) -> PromptMetadata[ModelConfigT]:
+        return PromptMetadata.model_validate({**merges[0].model_dump(), 'config': base.config})
 
-        })
-
-    resolve_metadata_mock = AsyncMock(
-        side_effect=wrapper
-
-    )
-
+    resolve_metadata_mock = AsyncMock(side_effect=wrapper)
 
     with patch.object(dotprompt, '_resolve_metadata', resolve_metadata_mock):
         result = asyncio.run(dotprompt.render_metadata(parsed_source))
-        resolve_metadata_mock.assert_called_with(
-            PromptMetadata(config={"temperature": 0.7}),
-            parsed_source,
-            None
-        )
+        resolve_metadata_mock.assert_called_with(PromptMetadata(config={'temperature': 0.7}), parsed_source, None)
 
-        assert result.config == {"temperature": 0.7}
-
-
-
+        assert result.config == {'temperature': 0.7}
