@@ -28,15 +28,17 @@ from dotpromptz.parse import parse_document, to_messages
 from dotpromptz.picoschema import picoschema_to_json_schema
 from dotpromptz.resolvers import resolve_json_schema, resolve_partial, resolve_tool
 from dotpromptz.typing import (
+    DataArgument,
     JsonSchema,
     ModelConfigT,
     ParsedPrompt,
     PartialResolver,
+    PromptFunction,
     PromptMetadata,
     PromptStore,
     SchemaResolver,
     ToolDefinition,
-    ToolResolver, DataArgument, PromptFunction,
+    ToolResolver,
 )
 from dotpromptz.util import remove_undefined_fields
 from handlebarrz import EscapeFunction, Handlebars, HelperFn
@@ -434,50 +436,33 @@ class Dotprompt:
         # TODO: Should we cache the resolved schema in self._schemas?
         return await resolve_json_schema(name, self._schema_resolver)
 
-
     async def compile(
-            self,
-            source: str | ParsedPrompt[ModelConfigT],
-            additional_metadata: PromptMetadata[ModelConfigT] | None = None
-        ) -> PromptFunction:
-
+        self, source: str | ParsedPrompt[ModelConfigT], additional_metadata: PromptMetadata[ModelConfigT] | None = None
+    ) -> PromptFunction:
         parsed_source = self.parse(source) if isinstance(source, str) else source
-
-
 
         await self._resolve_partials(parsed_source.template)
 
         render_string = self._handlebars.compile(parsed_source.template)
 
-
-        async def render_func(
-            data: DataArgument,
-            options: PromptMetadata[ModelConfigT] | None
-        ):
+        async def render_func(data: DataArgument, options: PromptMetadata[ModelConfigT] | None):
             merged_metadata = await self.render_metadata(parsed_source)
 
-
             rendered_string = render_string(
+                {**((options and options.input and options.input.default) or {}), **(data.input or {})},
                 {
-                    **((options and options.input and options.input.default) or {}),
-                    **(data.input or {})
-                },
-                {
-                    "data": {
-                        "metadata": {
-                            "prompt": merged_metadata.metadata,
-                            "docs": data.docs,
-                            "messages": data.messages,
+                    'data': {
+                        'metadata': {
+                            'prompt': merged_metadata.metadata,
+                            'docs': data.docs,
+                            'messages': data.messages,
                         },
-                        **(data.context or {})
+                        **(data.context or {}),
                     }
-                }
+                },
             )
 
-            return PromptMetadata.model_validate(
-                {
-                    **merged_metadata.model_dump(),
-                    "messages": to_messages(rendered_string, data),
-                }
-            )
-
+            return PromptMetadata.model_validate({
+                **merged_metadata.model_dump(),
+                'messages': to_messages(rendered_string, data),
+            })
