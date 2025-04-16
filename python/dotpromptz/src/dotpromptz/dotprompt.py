@@ -207,8 +207,9 @@ class Dotprompt:
         """
         out = base.model_copy(deep=True)
 
-        for merge in (m for m in merges if m is not None):
-            out = self._merge_metadata(out, merge)
+        for merge in merges:
+            if merge is not None:
+                out = self._merge_metadata(out, merge)
 
         # Remove the template attribute if it exists (TS does this).
         if hasattr(out, 'template'):
